@@ -1,0 +1,2 @@
+docker run -d --rm --net bruvchatnetwork -p 27017:27017 --name bruvchatdata mongo
+docker run -it --rm --net bruvchatnetwork -p 9300:9300 --name bruvchatserver -v /c/Users/kacper/Documents/Code/BruvChat2/server:/bruvchatserver bruvchatserver
