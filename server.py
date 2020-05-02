@@ -22,9 +22,40 @@ class Connection:
 
 class Server:
 
+    async def fetchMessagesFromMailbox(self, connection):
+        user_mailbox = self.db_client[f"mailbox#{connection.userid}"]
+        device_mailbox = self.db_client[f"mailbox#{connection.userid}#{connection.deviceid}"]
+
+        messages = []
+
+        for message in user_mailbox.find():
+            user_mailbox.delete_one({"_id" : message["_id"]})
+            del message["_id"]
+            messages.append(message)
+
+        for message in device_mailbox.find():
+            device_mailbox.delete_one({"_id" : message["_id"]})
+            del message["_id"]
+            messages.append(message)
+        
+        return {
+            "type" : "fetch_messages",
+            "data" : messages
+        } 
+
+    async def acceptedAddCorrespondents(self, data):
+        self.db_user_collection.update_one({'userid' : data['to_userid']}, {'$push' : {'correspondents' : data['from_userid']}})
+        self.db_user_collection.update_one({'userid' : data['from_userid']}, {'$push' : {'correspondents' : data['to_userid']}})
+
+
+    async def getDevices(self, userid):
+        return self.db_client[f'devices#{userid}'].find()
+
+    async def getUserByUsername(self, username):
+        return self.db_user_collection.find_one({"username": username})
+
     async def addDevice(self, userid, devicedata):
         collection_users_devices = self.db_client[f'devices#{userid}']
-
         next_deviceid = 1
         if collection_users_devices.find_one() != None:
             next_deviceid = collection_users_devices.find().sort([("userid", pymongo.DESCENDING)])[0]["deviceid"]
@@ -40,11 +71,18 @@ class Server:
 
         return next_deviceid
 
-    async def getDevices(self, userid):
-        return self.db_client[f'devices#{userid}'].find()
+    async def addCorrespondent(self, data):
+        from_user = await self.getUserByUsername(data["from_username"])
+        to_user = await self.getUserByUsername(data["to_username"])
+        if to_user == None or from_user == None:
+            return {"type" : "add_correspondent_send_rejected"}
+        data["to_userid"] = to_user["userid"]
 
-    async def getUserByUsername(self, username):
-        return self.db_user_collection.find_one({"username": username})
+        if to_user["userid"] in from_user["correspondents"]:
+            return {"type" : "add_correspondent_send_rejected"}
+        
+        self.db_client[f'mailbox#{to_user["userid"]}'].insert_one(data)
+        return {"type" : "add_correspondent_send_accepted"}
 
     async def handleSignUp(self,  data):
         if await self.getUserByUsername(data["username"]) != None:
@@ -82,8 +120,9 @@ class Server:
 
         return {"type": "loginwithnodata_accepted",
                 "userid" : user_server_data["userid"],
-                "deviceid" : new_deviceid
+                "deviceid" : new_deviceid,
                 }
+
     async def handleLoginWithData(self, data, websocket):
         user_server_data = await self.getUserByUsername(data["username"]) 
         if user_server_data == None:
@@ -105,8 +144,12 @@ class Server:
                 break
         if not found:
             return {"type" : "loginwithdata_rejected"}
+        
+        self.connections[websocket].userid = user_server_data["userid"]
+        self.connections[websocket].deviceid = device["deviceid"]
 
-        return {"type" : "loginwithdata_accepted"}        
+        return {"type" : "loginwithdata_accepted"
+               }        
         
 
     async def handleRequest(self, message, websocket):
@@ -116,6 +159,12 @@ class Server:
             return await self.handleLoginWithNoData(message["data"], websocket) 
         elif message["type"] == "loginwithdata":
             return await self.handleLoginWithData(message["data"], websocket) 
+        elif message["type"] == "add_correspondent":
+            return await self.addCorrespondent(message["data"])
+        elif message["type"] == "fetch_messages":
+            return await self.fetchMessagesFromMailbox(self.connections[websocket])
+        elif message["type"] == "add_correspondent_accepted":
+            return await self.acceptedAddCorrespondents(message)
 
     async def listen(self, websocket, path):
         await self.register(websocket)
