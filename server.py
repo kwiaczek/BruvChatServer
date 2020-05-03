@@ -22,6 +22,20 @@ class Connection:
 
 class Server:
 
+    async def fetchCorrespondent(self, userid):
+        correspondent = await self.getUserByUserID(userid)
+        del correspondent["password"]
+        del correspondent["correspondents"]
+        del correspondent["_id"]
+
+        correspondents_devices = [] 
+        for device in await self.getDevices(userid):
+            del device["_id"]
+            correspondents_devices.append(device)
+        correspondent["devices"] = correspondents_devices
+        print(correspondent)
+        return correspondent
+
     async def fetchMessagesFromMailbox(self, connection):
         user_mailbox = self.db_client[f"mailbox#{connection.userid}"]
         device_mailbox = self.db_client[f"mailbox#{connection.userid}#{connection.deviceid}"]
@@ -47,9 +61,11 @@ class Server:
         self.db_user_collection.update_one({'userid' : data['to_userid']}, {'$push' : {'correspondents' : data['from_userid']}})
         self.db_user_collection.update_one({'userid' : data['from_userid']}, {'$push' : {'correspondents' : data['to_userid']}})
 
-
     async def getDevices(self, userid):
         return self.db_client[f'devices#{userid}'].find()
+
+    async def getUserByUserID(self, userid):
+        return self.db_user_collection.find_one({"userid": userid})
 
     async def getUserByUsername(self, username):
         return self.db_user_collection.find_one({"username": username})
@@ -118,9 +134,11 @@ class Server:
         self.connections[websocket].userid = user_server_data["userid"] 
         self.connections[websocket].deviceid = new_deviceid
 
+        correspondent = [ await self.fetchCorrespondent(correspondent_userid) for correspondent_userid in user_server_data["correspondents"]]
         return {"type": "loginwithnodata_accepted",
                 "userid" : user_server_data["userid"],
                 "deviceid" : new_deviceid,
+                "correspondents" : correspondent 
                 }
 
     async def handleLoginWithData(self, data, websocket):
@@ -147,11 +165,11 @@ class Server:
         
         self.connections[websocket].userid = user_server_data["userid"]
         self.connections[websocket].deviceid = device["deviceid"]
-
-        return {"type" : "loginwithdata_accepted"
+        correspondent = [ await self.fetchCorrespondent(correspondent_userid) for correspondent_userid in user_server_data["correspondents"]]
+        return {"type" : "loginwithdata_accepted", 
+                "correspondents" : correspondent
                }        
         
-
     async def handleRequest(self, message, websocket):
         if message["type"] == "signup":
             return await self.handleSignUp(message["data"]) 
