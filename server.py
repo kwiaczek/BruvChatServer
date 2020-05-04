@@ -21,54 +21,18 @@ class Connection:
         self.deviceid = deviceid
 
 class Server:
-
-    async def fetchCorrespondent(self, userid):
-        correspondent = await self.getUserByUserID(userid)
-        del correspondent["password"]
-        del correspondent["correspondents"]
-        del correspondent["_id"]
-
-        correspondents_devices = [] 
-        for device in await self.getDevices(userid):
-            del device["_id"]
-            correspondents_devices.append(device)
-        correspondent["devices"] = correspondents_devices
-        print(correspondent)
-        return correspondent
-
-    async def fetchMessagesFromMailbox(self, connection):
-        user_mailbox = self.db_client[f"mailbox#{connection.userid}"]
-        device_mailbox = self.db_client[f"mailbox#{connection.userid}#{connection.deviceid}"]
-
-        messages = []
-
-        for message in user_mailbox.find():
-            user_mailbox.delete_one({"_id" : message["_id"]})
-            del message["_id"]
-            messages.append(message)
-
-        for message in device_mailbox.find():
-            device_mailbox.delete_one({"_id" : message["_id"]})
-            del message["_id"]
-            messages.append(message)
-        
-        return {
-            "type" : "fetch_messages",
-            "data" : messages
-        } 
-
-    async def acceptedAddCorrespondents(self, data):
-        self.db_user_collection.update_one({'userid' : data['to_userid']}, {'$push' : {'correspondents' : data['from_userid']}})
-        self.db_user_collection.update_one({'userid' : data['from_userid']}, {'$push' : {'correspondents' : data['to_userid']}})
-
     async def getDevices(self, userid):
-        return self.db_client[f'devices#{userid}'].find()
+        devices = []
+        for device in  self.db_client[f'devices#{userid}'].find():
+            del device["_id"]
+            devices.append(device)
+        return devices
 
     async def getUserByUserID(self, userid):
-        return self.db_user_collection.find_one({"userid": userid})
+        return self.db_client["users"].find_one({"userid": userid})
 
     async def getUserByUsername(self, username):
-        return self.db_user_collection.find_one({"username": username})
+        return self.db_client["users"].find_one({"username": username})
 
     async def addDevice(self, userid, devicedata):
         collection_users_devices = self.db_client[f'devices#{userid}']
@@ -87,28 +51,15 @@ class Server:
 
         return next_deviceid
 
-    async def addCorrespondent(self, data):
-        from_user = await self.getUserByUsername(data["from_username"])
-        to_user = await self.getUserByUsername(data["to_username"])
-        if to_user == None or from_user == None:
-            return {"type" : "add_correspondent_send_rejected"}
-        data["to_userid"] = to_user["userid"]
-
-        if to_user["userid"] in from_user["correspondents"]:
-            return {"type" : "add_correspondent_send_rejected"}
-        
-        self.db_client[f'mailbox#{to_user["userid"]}'].insert_one(data)
-        return {"type" : "add_correspondent_send_accepted"}
-
     async def handleSignUp(self,  data):
         if await self.getUserByUsername(data["username"]) != None:
             return {"type" : "signup_rejected"} 
         next_uid = 1
-        if self.db_user_collection.find_one() != None:
-            next_uid = self.db_user_collection.find().sort([("userid", pymongo.DESCENDING)])[0]["userid"]
+        if self.db_client["users"].find_one() != None:
+            next_uid = self.db_client["users"].find().sort([("userid", pymongo.DESCENDING)])[0]["userid"]
             next_uid += 1 
 
-        self.db_user_collection.insert_one({
+        self.db_client["users"].insert_one({
             "userid" : next_uid,
             "username": data["username"],
             "password" : await hashPassword(data["password"]),
@@ -134,11 +85,9 @@ class Server:
         self.connections[websocket].userid = user_server_data["userid"] 
         self.connections[websocket].deviceid = new_deviceid
 
-        correspondent = [ await self.fetchCorrespondent(correspondent_userid) for correspondent_userid in user_server_data["correspondents"]]
         return {"type": "loginwithnodata_accepted",
                 "userid" : user_server_data["userid"],
                 "deviceid" : new_deviceid,
-                "correspondents" : correspondent 
                 }
 
     async def handleLoginWithData(self, data, websocket):
@@ -165,11 +114,69 @@ class Server:
         
         self.connections[websocket].userid = user_server_data["userid"]
         self.connections[websocket].deviceid = device["deviceid"]
-        correspondent = [ await self.fetchCorrespondent(correspondent_userid) for correspondent_userid in user_server_data["correspondents"]]
-        return {"type" : "loginwithdata_accepted", 
-                "correspondents" : correspondent
-               }        
-        
+
+        return {"type" : "loginwithdata_accepted"}        
+
+    async def fetchMessages(self, connection):
+        messages = []
+        user_mailbox = self.db_client[f'mailbox#{connection.userid}']
+        #general meaning meant for every device 
+        for general_messsage in user_mailbox.find():
+            user_mailbox.delete_one({"_id" : general_messsage["_id"]})
+            del general_messsage["_id"]
+            messages.append(general_messsage)
+        user_device_mailbox = self.db_client[f'mailbox#{connection.userid}#{connection.deviceid}']
+        #device meaning meant for this particular device 
+        for device_messsage in user_device_mailbox.find():
+            user_device_mailbox.delete_one({"_id" : device_messsage["_id"]})
+            del device_messsage["_id"]
+            messages.append(device_messsage)
+        return messages
+
+    async def fetchCorrespondents(self, connection):
+        user = await self.getUserByUserID(connection.userid)
+        correspondents = []
+        for correspondent_id in user["correspondents"]:
+            correspondent = await self.getUserByUserID(correspondent_id)
+            del correspondent["_id"]
+            del correspondent["password"]
+            del correspondent["correspondents"]
+            correspondent["devices"] = await self.getDevices(correspondent_id)
+            correspondents.append(correspondent) 
+        return correspondents
+    
+    async def notifyOutdated(self, userid):
+        notify_outdate_msg = {
+            "type" : "outdated"
+        }
+
+        for socket, connection in self.connections.items():
+            if connection.userid == userid:
+                await socket.send(json.dumps(notify_outdate_msg))
+
+    async def handleRequestUpdate(self, websocket):
+        messages = await self.fetchMessages(self.connections[websocket])
+        correspondents = await self.fetchCorrespondents(self.connections[websocket])
+        return {
+                "type" : "request_update",
+                "messages": messages,
+                "correspondents" : correspondents
+        }
+    async def handleAddCorrespondentRequest(self, data, websocket):
+        to_user = await self.getUserByUsername(data["to_username"])
+        if to_user == None:
+            return {"type" : "add_correspondent_request_rejected"}
+        data["to_userid"] = to_user["userid"]
+        self.db_client[f'mailbox#{to_user["userid"]}'].insert_one(data)        
+        return {"type" : "add_correspondent_request_accept"}
+    
+    async def handleAcceptCorrespondentRequest(self, data):
+        self.db_client["users"].update_one({'userid' : data['to_userid']}, {'$push' : {'correspondents' : data['from_userid']}})
+        self.db_client["users"].update_one({'userid' : data['from_userid']}, {'$push' : {'correspondents' : data['to_userid']}})
+        await self.notifyOutdated(data["to_userid"])
+        await self.notifyOutdated(data["from_userid"])
+        return {"type" : "accept_correspondent_request_accepted"}
+
     async def handleRequest(self, message, websocket):
         if message["type"] == "signup":
             return await self.handleSignUp(message["data"]) 
@@ -177,12 +184,12 @@ class Server:
             return await self.handleLoginWithNoData(message["data"], websocket) 
         elif message["type"] == "loginwithdata":
             return await self.handleLoginWithData(message["data"], websocket) 
-        elif message["type"] == "add_correspondent":
-            return await self.addCorrespondent(message["data"])
-        elif message["type"] == "fetch_messages":
-            return await self.fetchMessagesFromMailbox(self.connections[websocket])
-        elif message["type"] == "add_correspondent_accepted":
-            return await self.acceptedAddCorrespondents(message)
+        elif message["type"] == "request_update":
+            return await self.handleRequestUpdate(websocket) 
+        elif message["type"] == "add_correspondent_request":
+            return await self.handleAddCorrespondentRequest(message["data"], websocket) 
+        elif message["type"] == "accept_correspondent_request":
+            return await self.handleAcceptCorrespondentRequest(message) 
 
     async def listen(self, websocket, path):
         await self.register(websocket)
@@ -192,9 +199,9 @@ class Server:
         finally:
             await self.unregister(websocket)
 
+    #functions for managing connections
     async def unregister(self, websocket):
         del self.connections[websocket]
-
     async def register(self, websocket):
         self.connections[websocket] = Connection()
     
@@ -202,7 +209,6 @@ class Server:
     def __init__(self, mongo_hostname="bruvchatdata", mongo_port=27017):
         #database connection 
         self.db_client = pymongo.MongoClient(f'mongodb://{mongo_hostname}:{mongo_port}')["bruvchat"]
-        self.db_user_collection = self.db_client["users"]
         #connections
         self.connections = {}
 
