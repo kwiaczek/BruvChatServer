@@ -168,6 +168,7 @@ class Server:
             return {"type" : "add_correspondent_request_rejected"}
         data["to_userid"] = to_user["userid"]
         self.db_client[f'mailbox#{to_user["userid"]}'].insert_one(data)        
+        await self.notifyOutdated(data["to_userid"])
         return {"type" : "add_correspondent_request_accept"}
     
     async def handleAcceptCorrespondentRequest(self, data):
@@ -176,6 +177,37 @@ class Server:
         await self.notifyOutdated(data["to_userid"])
         await self.notifyOutdated(data["from_userid"])
         return {"type" : "accept_correspondent_request_accepted"}
+
+    async def handleSendMessage(self, messages):
+        sender_userid = 0
+        sender_deviceid = 0
+        receiver_deviceid = 0
+        receiver_userid = 0
+        for message in messages:
+            print(message.keys())
+            print(message)
+
+
+            receiver_userid = message["receiver_userid"]
+            sender_userid = message["sender_userid"]
+            receiver_deviceid = message["device"]["receiver_deviceid"]
+            sender_deviceid = message["device"]["sender_deviceid"]
+
+            print(receiver_userid)
+            print(receiver_deviceid)
+            print(sender_userid)
+            print(sender_deviceid)
+
+            if message["encrypted_type"] == "internal":
+                print("internal")
+                self.db_client[f'mailbox#{sender_userid}#{receiver_deviceid}'].insert_one(message)
+            elif message["encrypted_type"] == "external":
+                print("internal")
+                self.db_client[f'mailbox#{receiver_userid}#{receiver_deviceid}'].insert_one(message)
+        await self.notifyOutdated(receiver_userid)
+        await self.notifyOutdated(sender_userid)
+        return {"type" : "send_message_accepted"}
+
 
     async def handleRequest(self, message, websocket):
         if message["type"] == "signup":
@@ -190,6 +222,8 @@ class Server:
             return await self.handleAddCorrespondentRequest(message["data"], websocket) 
         elif message["type"] == "accept_correspondent_request":
             return await self.handleAcceptCorrespondentRequest(message) 
+        elif message["type"] == "send_message":
+            return await self.handleSendMessage(message["data"])
 
     async def listen(self, websocket, path):
         await self.register(websocket)
