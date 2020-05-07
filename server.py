@@ -157,6 +157,7 @@ class Server:
     async def handleRequestUpdate(self, websocket):
         messages = await self.fetchMessages(self.connections[websocket])
         correspondents = await self.fetchCorrespondents(self.connections[websocket])
+        print(f'User {self.connections[websocket].userid}[{self.connections[websocket].deviceid}] request an update')
         return {
                 "type" : "request_update",
                 "messages": messages,
@@ -184,25 +185,16 @@ class Server:
         receiver_deviceid = 0
         receiver_userid = 0
         for message in messages:
-            print(message.keys())
-            print(message)
-
-
             receiver_userid = message["receiver_userid"]
             sender_userid = message["sender_userid"]
             receiver_deviceid = message["device"]["receiver_deviceid"]
             sender_deviceid = message["device"]["sender_deviceid"]
 
-            print(receiver_userid)
-            print(receiver_deviceid)
-            print(sender_userid)
-            print(sender_deviceid)
-
             if message["encrypted_type"] == "internal":
-                print("internal")
+                print(f'Internal message from {sender_userid}[{sender_deviceid}] to {receiver_userid}[{receiver_deviceid}]')
                 self.db_client[f'mailbox#{sender_userid}#{receiver_deviceid}'].insert_one(message)
             elif message["encrypted_type"] == "external":
-                print("internal")
+                print(f'External message from {sender_userid}[{sender_deviceid}] to {receiver_userid}[{receiver_deviceid}]')
                 self.db_client[f'mailbox#{receiver_userid}#{receiver_deviceid}'].insert_one(message)
         await self.notifyOutdated(receiver_userid)
         await self.notifyOutdated(sender_userid)
