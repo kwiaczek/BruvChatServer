@@ -6,6 +6,7 @@ import os
 import hashlib
 import binascii 
 import base64
+import ssl
 
 #"UNIX-STYLE" hashed password 
 async def hashPassword(password, salt=None, hash='sha256', iter=100000):
@@ -221,6 +222,7 @@ class Server:
         await self.register(websocket)
         try:
             async for message in websocket:
+                print(message)
                 await websocket.send(json.dumps(await self.handleRequest(json.loads(message), websocket)))
         finally:
             await self.unregister(websocket)
@@ -241,6 +243,10 @@ class Server:
 
 if __name__ == "__main__":
     server = Server() 
-    listen_server = websockets.serve(server.listen, "0.0.0.0", 9300)
+    #setup tls
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_context.load_cert_chain("cert.pem", "key.pem")
+    #start server
+    listen_server = websockets.serve(server.listen, "0.0.0.0", 9300, ssl=ssl_context)
     asyncio.get_event_loop().run_until_complete(listen_server)
     asyncio.get_event_loop().run_forever()
